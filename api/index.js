@@ -197,7 +197,7 @@ function imageFrom($, img) {
   ];
   for (const c of candidates) {
     const abs = absoluteUrl(c);
-    if (abs && /^https?:/i.test(abs) && !/(placeholder|blank\.|spacer|loading|1x1|lazy\.)/i.test(abs)) {
+    if (abs && /^https?:/i.test(abs) && !/(placeholder|blank\.|spacer|loading|1x1|lazy\.|admin-ajax\.php|rank_math|download\.gif|logo\.gif)/i.test(abs)) {
       return abs;
     }
   }
@@ -450,6 +450,9 @@ function classifyUrl(url) {
   if ((host === 'drive.google.com' || host === 'docs.google.com' || host === 'drive.usercontent.google.com') && gdriveId(url)) {
     return 'gdrive';
   }
+  if (host.includes('vidzer.me') || lower.includes('vidzer.me')) {
+    return 'vidzer';
+  }
   if (/\.m3u8(?:[?#]|$)/.test(lower)) return 'hls';
   if (/\.(?:mp4|mkv|webm|avi|mov|m4v)(?:[?#]|$)/.test(lower)) return 'direct';
   if (sameSite(url)) return 'internal';
@@ -536,7 +539,7 @@ function scanContent($, root, pageUrl, inherited = {}) {
       episode: detectEpisode(label) != null ? detectEpisode(label) : detectEpisode(parentText) != null ? detectEpisode(parentText) : state.episode
     };
 
-    if (kind === 'gdrive' || kind === 'hls' || kind === 'direct') {
+    if (kind === 'gdrive' || kind === 'hls' || kind === 'direct' || kind === 'vidzer') {
       push({ ...base, kind });
     } else if (kind === 'internal') {
       if (isPostUrl(url) && (buttonish || DOWNLOADISH.test(label))) {
@@ -727,13 +730,40 @@ async function getMeta(type, id) {
     text.match(/IMDb[^\d\n]{0,30}(\d(?:\.\d)?)\s*(?:\/|out of)\s*10/i) ||
     text.match(/IMDb\s*(?:rating)?\s*[:\-–]?\s*(\d(?:\.\d)?)/i);
 
+  // 1. High-resolution poster extraction from CineFreak DOM (avoids watermark GIFs and logos)
+  let realPoster = null;
+  const $posterImg = $('img.external-img.wp-post-image, .poster-image img, figure img.wp-post-image, article img.wp-post-image').first();
+  if ($posterImg.length) {
+    const src = imageFrom($, $posterImg);
+    if (src && !/(logo|icon|avatar|download\.gif|admin-ajax\.php|rank_math)/i.test(src)) {
+      realPoster = src;
+    }
+  }
+
+  // 2. High-resolution backdrop from #cfClickPlay background-image style
+  let realBackground = null;
+  const playBtnStyle = $('#cfClickPlay, .cf-click-play, .cf-screen-holder [style*="background-image"]').first().attr('style') || '';
+  const bgMatch = playBtnStyle.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/i);
+  if (bgMatch && !/(logo|icon|avatar|download\.gif|admin-ajax\.php|rank_math)/i.test(bgMatch[1])) {
+    realBackground = absoluteUrl(bgMatch[1], url);
+  }
+
+  // Filter ogImage to avoid site logo / rank math watermark gif
+  let safeOgImage = ogImage;
+  if (safeOgImage && /(admin-ajax\.php|rank_math|logo|icon|download\.gif)/i.test(safeOgImage)) {
+    safeOgImage = null;
+  }
+
+  const primaryPoster = realPoster || images[0] || safeOgImage || undefined;
+  const primaryBackground = realBackground || safeOgImage || images[1] || primaryPoster;
+
   const meta = {
     id,
     type,
     name: parsed.name || rawTitle || 'CineFreak item',
     posterShape: 'poster',
-    poster: images[0] || ogImage || undefined,
-    background: ogImage || images[1] || images[0] || undefined,
+    poster: primaryPoster,
+    background: primaryBackground,
     description: description || undefined,
     releaseInfo: parsed.year || undefined,
     genres: genres.length ? genres : undefined,
@@ -790,15 +820,17 @@ function toStreams(links, packNote) {
         title: title + '\nOpen in Google Drive',
         externalUrl: 'https://drive.google.com/file/d/' + fileId + '/view'
       });
-    } else if (l.kind === 'direct' || l.kind === 'hls') {
+    } else if (l.kind === 'direct' || l.kind === 'hls' || l.kind === 'vidzer') {
+      const isVidzer = l.kind === 'vidzer' || /vidzer\.me/i.test(l.url);
+      const referer = isVidzer ? 'https://vidzer.me' : BASE_URL + '/';
       streams.push({
-        name,
+        name: isVidzer ? 'Vidzer\n' + (l.quality || 'Stream') : name,
         title,
         url: l.url,
         behaviorHints: {
           notWebReady: true,
           bingeGroup,
-          proxyHeaders: { request: { Referer: BASE_URL + '/', 'User-Agent': USER_AGENT } }
+          proxyHeaders: { request: { Referer: referer, 'User-Agent': USER_AGENT } }
         }
       });
     } else {
