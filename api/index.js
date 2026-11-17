@@ -453,6 +453,9 @@ function classifyUrl(url) {
   if (host.includes('vidzer.me') || lower.includes('vidzer.me')) {
     return 'vidzer';
   }
+  if (host.includes('cinecloud.top') || lower.includes('cinecloud.top')) {
+    return 'cinecloud';
+  }
   if (/\.m3u8(?:[?#]|$)/.test(lower)) return 'hls';
   if (/\.(?:mp4|mkv|webm|avi|mov|m4v)(?:[?#]|$)/.test(lower)) return 'direct';
   if (sameSite(url)) return 'internal';
@@ -539,14 +542,14 @@ function scanContent($, root, pageUrl, inherited = {}) {
       episode: detectEpisode(label) != null ? detectEpisode(label) : detectEpisode(parentText) != null ? detectEpisode(parentText) : state.episode
     };
 
-    if (kind === 'gdrive' || kind === 'hls' || kind === 'direct' || kind === 'vidzer') {
+    if (kind === 'gdrive' || kind === 'hls' || kind === 'direct' || kind === 'vidzer' || kind === 'cinecloud') {
       push({ ...base, kind });
     } else if (kind === 'internal') {
       if (isPostUrl(url) && (buttonish || DOWNLOADISH.test(label))) {
         push({ ...base, kind: 'interstitial' });
       }
-    } else if (buttonish || DOWNLOADISH.test(blob)) {
-      push({ ...base, kind: 'external' });
+    } else if (buttonish || DOWNLOADISH.test(blob) || /cinecloud|fastdl/i.test(url)) {
+      push({ ...base, kind: 'cinecloud' });
     }
   });
 
@@ -789,7 +792,7 @@ async function getMeta(type, id) {
 /* Streams                                                                */
 /* ====================================================================== */
 
-const KIND_RANK = { direct: 4, hls: 4, gdrive: 3, embed: 1, external: 0 };
+const KIND_RANK = { direct: 5, hls: 5, vidzer: 4, cinecloud: 4, gdrive: 3, embed: 2, external: 1 };
 
 function linkRank(l) {
   return (KIND_RANK[l.kind] || 0) * 100 + (QUALITY_RANK[l.quality] != null ? QUALITY_RANK[l.quality] : -1);
@@ -800,12 +803,16 @@ function toStreams(links, packNote) {
   const streams = [];
 
   for (const l of sorted) {
-    const name = ['CineFreak', l.quality || ''].filter(Boolean).join('\n');
+    const quality = l.quality || 'HD';
+    const name = ['CineFreak', quality].filter(Boolean).join('\n');
     const detail = [l.size, l.info].filter(Boolean).join(' • ');
     const title = [l.label || hostOf(l.url), detail, packNote && l.episode == null ? 'Season pack' : '']
       .filter(Boolean)
       .join('\n');
-    const bingeGroup = 'cinefreak-' + (l.quality || 'auto') + '-' + l.kind;
+    const bingeGroup = 'cinefreak-' + (l.quality || 'auto');
+
+    const isVidzer = l.kind === 'vidzer' || /vidzer\.me/i.test(l.url);
+    const referer = isVidzer ? 'https://vidzer.me' : 'https://cinefreak.net';
 
     if (l.kind === 'gdrive') {
       const fileId = gdriveId(l.url);
@@ -820,24 +827,22 @@ function toStreams(links, packNote) {
         title: title + '\nOpen in Google Drive',
         externalUrl: 'https://drive.google.com/file/d/' + fileId + '/view'
       });
-    } else if (l.kind === 'direct' || l.kind === 'hls' || l.kind === 'vidzer') {
-      const isVidzer = l.kind === 'vidzer' || /vidzer\.me/i.test(l.url);
-      const referer = isVidzer ? 'https://vidzer.me' : BASE_URL + '/';
+    } else {
+      const streamName = isVidzer ? 'Vidzer\n' + quality : (l.kind === 'cinecloud' ? 'CineCloud\n' + quality : name);
       streams.push({
-        name: isVidzer ? 'Vidzer\n' + (l.quality || 'Stream') : name,
+        name: streamName,
         title,
         url: l.url,
         behaviorHints: {
           notWebReady: true,
           bingeGroup,
-          proxyHeaders: { request: { Referer: referer, 'User-Agent': USER_AGENT } }
+          proxyHeaders: {
+            request: {
+              Referer: referer,
+              'User-Agent': USER_AGENT
+            }
+          }
         }
-      });
-    } else {
-      streams.push({
-        name: name + '\n' + (l.kind === 'embed' ? 'Embed' : 'Link'),
-        title: title + '\nOpens in browser',
-        externalUrl: l.url
       });
     }
   }
